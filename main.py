@@ -39,11 +39,12 @@ class PowerPlant:
         """
         if self.type:
             if self.type == 'gasfired':
-                return 'gas(euro/MWh)'
+                self.fuel = 'gas(euro/MWh)'
             elif self.type == 'turbojet':
-                return 'kerosine(euro/MWh)'
+                self.fuel =  'kerosine(euro/MWh)'
             elif self.type == 'windturbine':
-                return 'wind(%)'
+                self.fuel = 'wind(%)'
+            return self.fuel
         else:
             raise ValueError(f"No type defined for powerplant '{self.name}'")
         
@@ -60,6 +61,36 @@ class PowerPlant:
             return float("{:.1f}".format(fuel_cost_per_mwh / self.efficiency))
         else:
             return 0
+        
+
+def store_powerplants(data):
+    # creating a list of powerplant objects
+    powerplants = []
+    for pp in data.powerplants:
+        pp_data = {
+        "name": pp['name'],
+        "type": pp['type'],
+        "efficiency": pp['efficiency'],
+        "pmin": pp['pmin'],
+        "pmax": pp['pmax'],
+        }
+        p = PowerPlant(pp_data)
+        powerplants.append(p)
+    return powerplants
+
+def produce_energy(data, powerplants):
+    # producing requested load
+    production = 0
+    remaining_to_produce = data.load
+    while remaining_to_produce > 0:
+        for pp in powerplants:
+            if pp.max_production <= remaining_to_produce:
+                pp.to_produce = pp.max_production
+                production += pp.to_produce
+                remaining_to_produce -= pp.to_produce
+            elif pp.max_production > remaining_to_produce:
+                pp.to_produce = remaining_to_produce
+                remaining_to_produce -= pp.to_produce
 
 
 @app.post("/productionplan")
@@ -67,32 +98,20 @@ async def production_plan(data: PayLoad):
 
     response = []
 
-    if data.load and not data.load < 0:
-        load = data.load
-    else:
-        raise HTTPException(status_code=400, detail=f"'load' not provided or incorrect. It must be greater than 0.")
+    # check data
+    if not data.load or data.load < 0:
+        raise HTTPException(status_code=400, detail="'load' not provided or incorrect. It must be greater than 0.")
     if data.fuels:
-        if data.fuels['wind(%)'] and not data.fuels['wind(%)'] < 0:
+        if data.fuels['wind(%)'] and data.fuels['wind(%)'] >= 0:
             wind = data.fuels['wind(%)']
         else:
-            raise HTTPException(status_code=400, detail=f"'wind' not provided or incorrect. It must be greater than 0.")
+            raise HTTPException(status_code=400, detail="'wind' not provided or incorrect. It must be greater than 0.")
     else:
-        raise HTTPException(status_code=400, detail=f"'fuels' not provided or incorrect.")
+        raise HTTPException(status_code=400, detail="'fuels' not provided or incorrect.")
     
-    powerplants = []
-
-    # creating a list of powerplant objects
     if data.powerplants:
-        for pp in data.powerplants:
-            pp_data = {
-            "name": pp['name'],
-            "type": pp['type'],
-            "efficiency": pp['efficiency'],
-            "pmin": pp['pmin'],
-            "pmax": pp['pmax'],
-            }
-            p = PowerPlant(pp_data)
-            powerplants.append(p)
+        # creating a list of powerplant objects
+        powerplants = store_powerplants(data)
 
         # calculating powerplants data so to allow the object classification/ordering
         for pp in powerplants:
@@ -107,18 +126,7 @@ async def production_plan(data: PayLoad):
         # ordering powerplants by unit cost
         powerplants_ordered_by_unit_cost = sorted(powerplants, key=lambda x: x.unit_cost)
 
-        # producing requested load
-        production = 0
-        remaining_to_produce = load
-        while remaining_to_produce > 0:
-            for pp in powerplants_ordered_by_unit_cost:
-                if pp.max_production <= remaining_to_produce:
-                    pp.to_produce = pp.max_production
-                    production += pp.to_produce
-                    remaining_to_produce -= pp.to_produce
-                elif pp.max_production > remaining_to_produce:
-                    pp.to_produce = remaining_to_produce
-                    remaining_to_produce -= pp.to_produce
+        produce_energy(data, powerplants_ordered_by_unit_cost)
 
         # generating response
         for pp in powerplants_ordered_by_unit_cost:
@@ -129,7 +137,7 @@ async def production_plan(data: PayLoad):
                 }
             )
     else:
-        raise HTTPException(status_code=400, detail=f"No powerplants available to produce the requested load.")
+        raise HTTPException(status_code=400, detail="No powerplants available to produce the requested load.")
 
     return response
 
